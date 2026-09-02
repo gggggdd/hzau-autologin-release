@@ -173,6 +173,14 @@ try {
     Write-Host "  安装目录: $InstallDir"
     Write-Host "  程序: $dest"
 
+    # 附带改密码小工具：以后改密码直接双击安装目录里的 change_password.bat，无需重装
+    if ($PSScriptRoot) {
+        foreach ($f in @('change_password.ps1', 'change_password.bat')) {
+            $p = Join-Path $PSScriptRoot $f
+            if (Test-Path $p) { Copy-Item $p $InstallDir -Force }
+        }
+    }
+
     # 3. 收集账号信息
     Write-Step '配置账号'
     if (-not $Username) {

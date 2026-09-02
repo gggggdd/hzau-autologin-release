@@ -60,6 +60,10 @@ irm https://raw.githubusercontent.com/gggggdd/hzau-autologin-release/main/instal
 
 - **改了校园网密码**：重新运行 `install.bat`。
 - **E2620 / 在线数超限**：到 zizhu.hzau.edu.cn 自助服务下线其他设备。
+- **装好/写好密码后仍无法认证**：双击解压目录或安装目录里的 **`diagnose.bat`**（用平时登录的
+  账号运行，不要"以管理员身份"），它会汇总配置、密码能否解密、网络状态、服务器连通性与运行
+  日志，把窗口内容或生成的报告发给作者即可定位；也可直接查看安装目录
+  `%LOCALAPPDATA%\HZAU-AutoLogin\srun_login.log` 最后几行（日志会给出中文提示）。
 - **在非校园网环境开机**：等待约 45 秒并尝试一次修复后继续等待，超时自动放弃，无副作用。
 - **卸载**：双击 `uninstall.bat`；或管理员 PowerShell 执行
   `Unregister-ScheduledTask -TaskName 'HZAU-AutoLogin' -Confirm:$false`。
@@ -84,6 +88,7 @@ build.ps1                     本地构建 exe 与分发 zip
 installer/
   ├─ install.bat              双击安装（自动提权、绕过执行策略）
   ├─ install.ps1              安装/卸载全部逻辑
+  ├─ diagnose.bat / .ps1      双击一键诊断（无法认证时运行，输出报告）
   └─ uninstall.bat            双击卸载
 .github/workflows/release.yml 推送 v* tag 自动构建并发布 Release
 docs/PACKAGING.md             打包与分发方案说明

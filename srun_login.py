@@ -59,6 +59,14 @@ def log(msg):
         pass
 
 
+def alert(msg):
+    """打包版是 noconsole（print 不可见），关键操作失败时用 MessageBox 弹窗提示用户。"""
+    try:
+        ctypes.windll.user32.MessageBoxW(0, msg, 'HZAU-AutoLogin', 0x40)
+    except Exception:
+        pass
+
+
 def http_get(url, timeout=10):
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
     with urllib.request.urlopen(req, timeout=timeout, context=SSL_CTX) as resp:
@@ -183,7 +191,7 @@ def load_password():
         ctypes.byref(bin_), None, None, None, None, 0, ctypes.byref(bout))
     if not ok:
         err = ctypes.GetLastError()
-        raise OSError('DPAPI 解密失败（WinError %d）。请在本机当前用户下重新运行 encrypt_password.ps1' % err)
+        raise OSError('DPAPI 解密失败（WinError %d）：password.bin 与当前 Windows 用户不匹配。请重新保存密码（打包版: 运行安装目录里的 change_password.bat；源码版: encrypt_password.ps1）' % err)
     try:
         return ctypes.string_at(bout.pbData, bout.cbData).decode('utf-8')
     finally:
@@ -335,6 +343,37 @@ def do_login(cfg, username, password, ip):
     return res, srv_ip
 
 
+# ---------------- 错误提示（仅用于写日志，不影响认证逻辑） ----------------
+
+def explain_error(emsg):
+    """把 Srun 错误码 / 常见异常翻译成直接可用的中文提示。"""
+    text = str(emsg)
+    low = text.lower()
+    if 'password_error' in text or 'E2901' in text:
+        return '密码错误。检查是否大小写/多余空格；用运营商宽带时 domain 需填 @cmcc/@telecom/@unicom'
+    if 'username_error' in text:
+        return '学号错误。username 应为纯学号，@后缀要放在 domain 字段'
+    if 'E2620' in text:
+        return '账号在线设备数超限（E2620），到 zizhu.hzau.edu.cn 自助服务下线其他设备后再试'
+    if 'E2531' in text:
+        return '客户端 IP 与服务器记录不一致（E2531），脚本已自动改用服务器 IP 重试；仍失败请重连网络后重试'
+    if 'timed out' in low or 'timeout' in low:
+        return '请求超时：校园网高峰期门户繁忙、或本机未真正联网。可稍后重试，或运行诊断工具 diagnose.bat 检查'
+    if 'get_challenge' in text:
+        return '取不到认证令牌（门户繁忙或网络受限），高峰期常见，可稍后重试'
+    return ''
+
+
+def online_status(server):
+    """返回 (是否在线, 服务器原始返回摘要)，供认证后核对与排障。"""
+    try:
+        text = http_get(server + '/cgi-bin/rad_user_info?callback=_')
+        res = parse_jsonp(text)
+        return res.get('error') == 'ok', json.dumps(res, ensure_ascii=False)[:200]
+    except Exception as e:
+        return False, '查询失败: %s' % e
+
+
 def run_once(cfg, password):
     server = cfg['server']
     domain = cfg.get('domain', '')
@@ -359,16 +398,25 @@ def run_once(cfg, password):
         except Exception as e:
             last_msg = '请求异常: %s' % e
             log('第 %d 次尝试: %s' % (attempt, last_msg))
+            hint = explain_error(e)
+            if hint:
+                log('  => %s' % hint)
         else:
             err = res.get('error')
             if err == 'ok':
                 log('认证成功（IP %s）' % ip)
                 time.sleep(2)
-                log('在线验证: %s' % ('通过' if check_online(server) else '未确认'))
+                ok, detail = online_status(server)
+                log('在线验证: %s' % ('通过' if ok else '未确认'))
+                if not ok:
+                    log('  rad_user_info 返回: %s（登录成功但未确认在线，多为多设备共享同一账号被顶下线）' % detail)
                 return 0
             emsg = res.get('error_msg') or res.get('ecode') or json.dumps(res, ensure_ascii=False)[:160]
             last_msg = str(emsg)
             log('第 %d 次尝试失败: %s' % (attempt, last_msg))
+            hint = explain_error(emsg)
+            if hint:
+                log('  => %s' % hint)
             # E2531: Client IP 不匹配 -> 用服务器返回的 client_ip 重试一次
             if emsg.startswith('E2531'):
                 try:
@@ -387,19 +435,34 @@ def run_once(cfg, password):
 
 
 def main():
+    log('启动: 目录 %s' % BASE_DIR)
     try:
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
             cfg = json.load(f)
     except Exception as e:
         log('读取 config.json 失败: %s' % e)
+        alert('未找到配置文件 config.json（期望位置: ' + BASE_DIR + '\\config.json）。\n\n'
+              '【打包版】请双击运行 install.bat 完成安装，装好后无需手动运行 exe；\n'
+              '配置与日志都在安装目录 %LOCALAPPDATA%\\HZAU-AutoLogin\\ 下。\n\n'
+              '如果你是在解压目录里直接双击 hzau-autologin.exe，那是不会生效的——请先运行 install.bat。')
         return 1
     if not (cfg.get('server') and cfg.get('username')):
-        log('config.json 缺少 server 或 username')
+        msg = 'config.json 缺少 server 或 username（文件: %s）' % CONFIG_PATH
+        log(msg)
+        alert('配置不完整：config.json 缺少 server 或 username。\n请重新运行 install.bat 填写学号。')
         return 1
     try:
         password = load_password()
     except FileNotFoundError:
-        log('未找到 password.bin，请先运行 encrypt_password.ps1 保存密码')
+        log('未找到 password.bin（打包版请重跑 install.bat，或运行安装目录里的 change_password.bat 重新保存密码）')
+        alert('未找到密码文件 password.bin。\n\n请重新运行 install.bat 输入学号和密码，'
+              '或运行安装目录 %LOCALAPPDATA%\\HZAU-AutoLogin\\ 里的 change_password.bat。')
+        return 1
+    except Exception as e:
+        msg = '读取密码失败: %s' % e
+        log(msg)
+        alert('密码读取失败：' + str(e) + '\n\n请用平时登录 Windows 的账号重新运行 install.bat 保存密码'
+              '（密码与 Windows 用户绑定，用管理员账号装会解不开）。')
         return 1
 
     if not wait_for_network(cfg):
