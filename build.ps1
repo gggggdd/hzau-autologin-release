@@ -40,6 +40,7 @@ New-Item -ItemType Directory -Path $staging | Out-Null
 Copy-Item $exe $staging
 Copy-Item (Join-Path $root 'installer\*') $staging
 Copy-Item (Join-Path $root 'README.md') $staging
+Copy-Item (Join-Path $root 'TUTORIAL.md') $staging
 Copy-Item (Join-Path $root 'config.example.json') $staging
 
 $zip = Join-Path $dist $zipName

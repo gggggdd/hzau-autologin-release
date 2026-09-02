@@ -22,6 +22,9 @@ irm https://raw.githubusercontent.com/gggggdd/hzau-autologin-release/main/instal
 
 装好后无需任何操作：登录 Windows 自动认证，并每 30 分钟巡检一次，断线自动重连。
 
+> 🧭 **第一次用 / 帮同学装**：先看压缩包里的 **`TUTORIAL.md`（使用教程）**，步骤更详细，
+> 含常见问题排查表。
+
 - **SmartScreen 提示"未知发布者"**：点 **更多信息 → 仍要运行**（未签名的自编译程序都会这样，
   Release 附了 SHA256 可自行比对）
 - **改密码 / 换电脑**：重新运行一次 `install.bat` 即可（密码 DPAPI 加密，绑定"本机 + 当前 Windows 用户"）
@@ -85,6 +88,7 @@ git push origin main --tags
 ```
 srun_login.py                 主脚本（纯标准库；含 PyInstaller frozen 环境适配）
 build.ps1                     本地构建 exe 与分发 zip
+README.md / TUTORIAL.md       项目说明 / 面向同学的使用教程
 installer/
   ├─ install.bat              双击安装（自动提权、绕过执行策略）
   ├─ install.ps1              安装/卸载全部逻辑

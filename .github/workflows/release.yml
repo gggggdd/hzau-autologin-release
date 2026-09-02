@@ -33,6 +33,7 @@ jobs:
           Copy-Item dist/hzau-autologin.exe $staging/
           Copy-Item installer/* $staging/
           Copy-Item README.md $staging/
+          Copy-Item TUTORIAL.md $staging/
           Copy-Item config.example.json $staging/
           Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $zip
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
