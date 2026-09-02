@@ -1,0 +1,11 @@
+# 真实凭证与本地数据，严禁提交
+config.json
+password.bin
+srun_login.log
+__pycache__/
+*.pyc
+
+# 构建产物
+dist/
+build/
+*.spec

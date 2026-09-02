@@ -1,0 +1,10 @@
+{
+  "server": "https://rz.hzau.edu.cn",
+  "ac_id": "5",
+  "username": "在这里填你的学号",
+  "domain": "",
+  "max_attempts": 3,
+  "retry_interval": 3,
+  "network_wait_seconds": 300,
+  "repair_interval_seconds": 60
+}
