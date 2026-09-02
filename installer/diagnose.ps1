@@ -87,6 +87,31 @@ if (-not (Test-Path $exe)) {
     exit 1
 }
 
+# ---------- 1.5 计划任务 ----------
+SayStep '1.5) 计划任务状态（开机 / 每 30 分钟是否真的会触发）'
+$curUser = $env:USERNAME
+foreach ($taskName in @('HZAU-AutoLogin', 'HZAU-AutoLogin-Reconnect')) {
+    $task = $null
+    try { $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop } catch { }
+    if (-not $task) {
+        SayWarn ('  [缺失] 计划任务 ' + $taskName + ' 不存在 —— 自动认证根本不会被触发！请重新运行 install.bat 安装')
+        continue
+    }
+    $runAs = ''
+    try { $runAs = $task.Principal.UserId } catch { }
+    $mismatch = ''
+    if ($runAs -and $runAs -notlike ('*' + $curUser)) {
+        $mismatch = '  <-- 与当前登录用户不一致！配置装到了别的账号名下，那个账号登录时才会触发'
+    }
+    Say ('  [存在] ' + $taskName + ' | 状态: ' + $task.State + ' | 运行身份: ' + $runAs + $mismatch)
+    try {
+        $info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
+        $lastRun = if ($info.LastRunTime -eq [datetime]::MinValue) { '(从未运行!)' } else { $info.LastRunTime.ToString('yyyy-MM-dd HH:mm') }
+        $lastRes = if ($info.LastTaskResult -eq 0) { '0（成功）' } else { ('0x{0:X8}（非 0=失败/未正常结束）' -f $info.LastTaskResult) }
+        Say ('          上次运行: ' + $lastRun + ' | 上次结果: ' + $lastRes)
+    } catch { }
+}
+
 # ---------- 2. 配置 ----------
 SayStep '2) 配置内容 config.json'
 try {

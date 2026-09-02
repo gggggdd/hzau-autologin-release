@@ -17,6 +17,7 @@ import base64
 import ctypes
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -67,8 +68,80 @@ def alert(msg):
         pass
 
 
+# 当默认路由被 VPN（Radmin VPN / Clash TUN 等虚拟网卡）占用导致门户不可达时，
+# 自动寻找另一块能连通认证服务器的网卡，并强制后续 HTTPS 请求从该网卡源地址发出。
+_SRC_IP = None          # 强制使用的源 IP；None 表示走系统默认路由
+
+
+def _resolve_server_ip(server_host):
+    """解析认证服务器主机名，返回第一个 IPv4 地址；失败返回 None。"""
+    try:
+        return socket.getaddrinfo(server_host, 443, socket.AF_INET,
+                                  socket.SOCK_STREAM)[0][4][0]
+    except OSError:
+        return None
+
+
+def list_local_ips():
+    """枚举本机各网卡的 IPv4 地址（去重、去掉回环）。"""
+    ips = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None,
+                                       socket.AF_INET, socket.SOCK_DGRAM):
+            ip = info[4][0]
+            if ip not in ips and not ip.startswith('127.'):
+                ips.append(ip)
+    except OSError:
+        pass
+    return ips
+
+
+def _probe_source(ip, server_ip):
+    """从指定源 IP 发起一次到认证服务器的 TCP 连接测试（SYN 即回，不发业务数据）。"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(3)
+        try:
+            s.bind((ip, 0))
+            s.connect((server_ip, 443))
+            return True
+        finally:
+            s.close()
+    except OSError:
+        return False
+
+
+def switch_to_reachable_nic(server_host, cur_ip):
+    """默认路由被 VPN 抢走时：遍历本机网卡，找一块能连通认证服务器的网卡并切换源 IP。
+
+    返回切换后的源 IP；找不到返回 None。只尝试一次。
+    """
+    global _SRC_IP
+    server_ip = _resolve_server_ip(server_host)
+    if not server_ip:
+        return None
+    for ip in list_local_ips():
+        if ip == cur_ip or ip == _SRC_IP:
+            continue
+        if _probe_source(ip, server_ip):
+            _SRC_IP = ip
+            return ip
+    return None
+
+
 def http_get(url, timeout=10):
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+    ua = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    if _SRC_IP and url.lower().startswith('https://'):
+        # 已切换到特定网卡：绑定源地址发 HTTPS 请求，避免仍走被 VPN 抢走的默认路由
+        p = urllib.parse.urlparse(url)
+        conn = http.client.HTTPSConnection(p.hostname, p.port or 443, timeout=timeout,
+                                           context=SSL_CTX, source_address=(_SRC_IP, 0))
+        try:
+            conn.request('GET', p.path + ('?' + p.query if p.query else ''), headers=ua)
+            return conn.getresponse().read().decode('utf-8', 'replace')
+        finally:
+            conn.close()
+    req = urllib.request.Request(url, headers=ua)
     with urllib.request.urlopen(req, timeout=timeout, context=SSL_CTX) as resp:
         return resp.read().decode('utf-8', 'replace')
 
@@ -304,6 +377,8 @@ def wait_for_network(cfg):
     repaired = 0
     while True:
         ip = get_local_ip_if_any(server_host)
+        if _SRC_IP:                     # 已自动切到可用网卡，以它为准
+            ip = _SRC_IP
         if ip and not is_apipa(ip):
             if portal_reachable(server, ac_id):
                 log('网络就绪，本机 IP: %s' % ip)
@@ -316,6 +391,12 @@ def wait_for_network(cfg):
                     hint_sent = True
                     log('提示: 门户持续不可达。若开着 Radmin VPN / Clash TUN 等 VPN 或代理虚拟网卡，'
                         '请断开后重试——虚拟网卡会抢默认路由，导致程序拿错网卡 IP')
+                    log('正在尝试自动切换到能连通认证服务器的网卡...')
+                    alt = switch_to_reachable_nic(server_host, ip)
+                    if alt:
+                        log('已切换源网卡 IP: %s（后续请求将从该网卡发出）' % alt)
+                    else:
+                        log('未找到可用的备用网卡；也可手动断开 VPN 后重试')
         else:
             log('等待 DHCP 分配 IP...%s' % ('（当前为 169.254 自动私网地址）' if ip else ''))
             if time.time() >= next_repair:
@@ -424,7 +505,7 @@ def run_once(cfg, password):
         log('获取门户页面 IP 失败(%s)，改用本机探测' % e)
         ip = None
     if not ip:
-        ip = get_local_ip(host_of(server))
+        ip = _SRC_IP or get_local_ip(host_of(server))
 
     last_msg = ''
     for attempt in range(1, int(cfg.get('max_attempts', 3)) + 1):
@@ -477,6 +558,8 @@ def run_once(cfg, password):
 
 
 def main():
+    global _SRC_IP
+    _SRC_IP = None      # 每次独立运行都重新探测，不残留上次的网卡切换
     log('启动: 目录 %s' % BASE_DIR)
     try:
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
