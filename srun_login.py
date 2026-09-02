@@ -200,11 +200,38 @@ def load_password():
 
 # ---------------- 网络流程 ----------------
 
-def get_local_ip():
+def host_of(server):
+    """从 server 配置里取出主机名（如 rz.hzau.edu.cn）。"""
+    return urllib.parse.urlparse(server).hostname or ''
+
+
+def get_local_ip(server_host=''):
+    """取本机 IP：优先"向认证服务器地址选路"（UDP connect 不发真实数据包，仅让系统选路由）。
+
+    原先固定连 223.5.5.5 取默认路由出口 IP，在装有 Radmin VPN / Clash TUN 等
+    虚拟网卡的机器上会取到 VPN 的假 IP（如 26.x），导致认证永远失败——这是
+    "卡住 + E2620 already online" 的根源。改为向认证服务器选路后，只要校园网
+    可达，取到的就是校园网物理网卡 IP。
+    """
+    targets = []
+    if server_host:
+        try:
+            for info in socket.getaddrinfo(server_host, 443, socket.AF_INET, socket.SOCK_STREAM):
+                ip = info[4][0]
+                if ip not in targets:
+                    targets.append(ip)
+        except OSError:
+            pass
+    targets.append('223.5.5.5')          # 解析失败时的回退：老逻辑默认出口
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(('223.5.5.5', 80))   # 不会真正发包，仅让系统选路由
-        return s.getsockname()[0]
+        for ip in targets:
+            try:
+                s.connect((ip, 443 if not ip.startswith('223.5.') else 80))
+                return s.getsockname()[0]
+            except OSError:
+                continue
+        raise OSError('无法确定本机 IP（所有选路目标均不可达）')
     finally:
         s.close()
 
@@ -232,9 +259,9 @@ def _run_cmd(args, timeout=90):
         return -1
 
 
-def get_local_ip_if_any():
+def get_local_ip_if_any(server_host=''):
     try:
-        return get_local_ip()
+        return get_local_ip(server_host)
     except OSError:
         return None
 
@@ -266,15 +293,17 @@ def wait_for_network(cfg):
     """
     server = cfg['server']
     ac_id = cfg.get('ac_id', '5')
+    server_host = host_of(server)
     max_wait = int(cfg.get('network_wait_seconds', 300))
     repair_interval = int(cfg.get('repair_interval_seconds', 60))
     elevated = is_elevated()
     deadline = time.time() + max_wait
     next_repair = time.time() + 45      # 先给 DHCP 45 秒机会，卡住才开始修复
     flushed_at = 0.0
+    hint_sent = False
     repaired = 0
     while True:
-        ip = get_local_ip_if_any()
+        ip = get_local_ip_if_any(server_host)
         if ip and not is_apipa(ip):
             if portal_reachable(server, ac_id):
                 log('网络就绪，本机 IP: %s' % ip)
@@ -283,6 +312,10 @@ def wait_for_network(cfg):
                 _run_cmd(['ipconfig', '/flushdns'])
                 flushed_at = time.time()
                 log('有 IP (%s) 但门户不可达，已刷新 DNS 缓存' % ip)
+                if not hint_sent:
+                    hint_sent = True
+                    log('提示: 门户持续不可达。若开着 Radmin VPN / Clash TUN 等 VPN 或代理虚拟网卡，'
+                        '请断开后重试——虚拟网卡会抢默认路由，导致程序拿错网卡 IP')
         else:
             log('等待 DHCP 分配 IP...%s' % ('（当前为 169.254 自动私网地址）' if ip else ''))
             if time.time() >= next_repair:
@@ -353,10 +386,12 @@ def explain_error(emsg):
         return '密码错误。检查是否大小写/多余空格；用运营商宽带时 domain 需填 @cmcc/@telecom/@unicom'
     if 'username_error' in text:
         return '学号错误。username 应为纯学号，@后缀要放在 domain 字段'
-    if 'E2620' in text:
-        return '账号在线设备数超限（E2620），到 zizhu.hzau.edu.cn 自助服务下线其他设备后再试'
+    if 'E2620' in text or 'already online' in text:
+        return '该账号已在线 / 在线设备数超限（E2620）：可能是你当前的上网会话，或手机等其他设备。能正常上网可忽略；上不了网请到 zizhu.hzau.edu.cn 下线其他设备'
     if 'E2531' in text:
         return '客户端 IP 与服务器记录不一致（E2531），脚本已自动改用服务器 IP 重试；仍失败请重连网络后重试'
+    if 'no_response_data_error' in text or 'AUTH failed' in text or 'respond timeout' in text:
+        return '认证服务器响应超时/繁忙（高峰期常见），或本机网卡选错——开着 Radmin VPN / Clash TUN 等虚拟网卡会抢默认路由，请断开后重试'
     if 'timed out' in low or 'timeout' in low:
         return '请求超时：校园网高峰期门户繁忙、或本机未真正联网。可稍后重试，或运行诊断工具 diagnose.bat 检查'
     if 'get_challenge' in text:
@@ -389,7 +424,7 @@ def run_once(cfg, password):
         log('获取门户页面 IP 失败(%s)，改用本机探测' % e)
         ip = None
     if not ip:
-        ip = get_local_ip()
+        ip = get_local_ip(host_of(server))
 
     last_msg = ''
     for attempt in range(1, int(cfg.get('max_attempts', 3)) + 1):
@@ -426,8 +461,15 @@ def run_once(cfg, password):
                         ip = cip
                 except Exception:
                     pass
+            # E2620: 账号已在线/在线数超限 -> 复核在线状态，不按"失败"处理
+            if 'E2620' in last_msg or 'already online' in last_msg.lower():
+                log('提示: E2620 = 该账号已在线（可能是你当前的上网会话，或手机等其他设备）。'
+                    '能正常上网可忽略；上不了网请到 zizhu.hzau.edu.cn 下线其他设备后重试。')
+                ok, detail = online_status(server)
+                log('复核在线状态: %s' % ('在线，无需重复登录' if ok else '不在线: %s' % detail))
+                return 0 if ok else 2
             # 凭证类错误重试无意义
-            if any(k in last_msg for k in ('password_error', 'E2901', 'username_error', 'E2620')):
+            if any(k in last_msg for k in ('password_error', 'E2901', 'username_error')):
                 break
         time.sleep(int(cfg.get('retry_interval', 3)))
     log('认证最终失败: %s' % last_msg)

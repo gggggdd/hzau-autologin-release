@@ -62,6 +62,8 @@ irm https://raw.githubusercontent.com/gggggdd/hzau-autologin-release/main/instal
 ## 常见问题
 
 - **改了校园网密码**：重新运行 `install.bat`。
+- **一直"认证失败 / 超时 / E2620"**：先**退出 Radmin VPN、Clash TUN 等 VPN/代理虚拟网卡**（或临时断开），
+  再重连校园网重试——虚拟网卡会抢默认路由，导致程序拿错本机 IP（日志里本机 IP 变成 26.x 等非校园网网段即此症状）。
 - **E2620 / 在线数超限**：到 zizhu.hzau.edu.cn 自助服务下线其他设备。
 - **装好/写好密码后仍无法认证**：双击解压目录或安装目录里的 **`diagnose.bat`**（用平时登录的
   账号运行，不要"以管理员身份"），它会汇总配置、密码能否解密、网络状态、服务器连通性与运行
